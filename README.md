@@ -1,14 +1,13 @@
-Running BigchainDB Docker Image
-To pull the BigchainDB Docker image:
+### Running BigchainDB Docker Image
 
-bash
-Copia codice
+#### To pull the BigchainDB Docker image:
+
+```bash
 docker pull bigchaindb/bigchaindb:all-in-one
-Running BigchainDB in a Docker Container
-To run BigchainDB with all necessary services in detached mode, use the following command:
+```
 
-bash
-Copia codice
+#### Running BigchainDB in a Docker Container
+```
 docker run \
   --detach \
   --name bigchaindb \
@@ -20,15 +19,15 @@ docker run \
   --volume $HOME/bigchaindb_docker/mongodb/data/configdb:/data/configdb \
   --volume $HOME/bigchaindb_docker/tendermint:/tendermint \
   bigchaindb/bigchaindb:all-in-one
-Checking BigchainDB Status
-To check if the BigchainDB container is running:
+```
 
-bash
-Copia codice
+
+#### Verify Running Container
+```
 docker ps | grep bigchaindb
-Running the Application
-To execute main.py using Uvicorn, run:
+```
 
-bash
-Copia codice
+#### Execute main.py file
+```
 uvicorn src.main:app --reload
+```
