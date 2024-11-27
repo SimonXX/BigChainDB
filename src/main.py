@@ -1,4 +1,5 @@
-from typing import Optional
+from typing import Optional, Dict
+from venv import logger
 
 from fastapi import FastAPI, HTTPException
 from src.adapters.certificate import CertificateAdapter
@@ -121,3 +122,66 @@ async def renew_certificate(tx_id: str, renewal: CertificateRenewal):
         raise he
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/v1/nodes/communication")
+async def verify_nodes_communication() -> Dict:
+    """
+    Verify communication between primary and secondary nodes with detailed error reporting
+    """
+    try:
+
+        # First verify individual node connectivity
+        if not certificate_adapter.check_node_connection():
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "message": "One or both nodes are not running",
+                    "error": "Node connectivity check failed"
+                }
+            )
+        print('Nodes are running')
+
+        # Test communication
+        result = certificate_adapter.verify_node_communication()
+
+        if not result['success']:
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "message": "Node communication failed",
+                    "error": result['error'],
+                    "primary_status": result['primary_node_status'],
+                    "secondary_status": result['secondary_node_status']
+                }
+            )
+
+        return {
+            "status": "success",
+            "message": "Nodes are communicating successfully",
+            "details": {
+                "primary_node": {
+                    "status": result['primary_node_status'],
+                    "url": 'http://localhost:9984'
+                },
+                "secondary_node": {
+                    "status": result['secondary_node_status'],
+                    "url": 'http://localhost:9986'
+                },
+                "test_transaction": {
+                    "id": result.get('transaction_id'),
+                    "verification": result.get('verification_details')
+                }
+            }
+        }
+
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "message": "Unexpected error during node communication verification",
+                "error": str(e)
+            }
+        )
