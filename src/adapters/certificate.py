@@ -1,3 +1,4 @@
+import subprocess
 from datetime import datetime, timedelta, time
 from typing import Dict, Any, Optional, List
 from bigchaindb_driver import BigchainDB
@@ -5,19 +6,28 @@ from bigchaindb_driver.crypto import generate_keypair
 import uuid
 import time
 
+from bigchaindb_driver.exceptions import NotFoundError
+from pymongo import MongoClient
+from uvicorn import logging
+
 
 class CertificateAdapter:
-    def __init__(self, primary_node='http://localhost:59984',
-                 secondary_node='http://localhost:59986'):
+    def __init__(self, coordinator1='http://localhost:9984',
+                 member2='http://localhost:9986',
+                 member3='http://localhost:9988',
+                 member4='http://localhost:9990'):
 
+        self.coordinator1 = BigchainDB(coordinator1)
+        self.member2 = BigchainDB(member2)
+        self.member3 = BigchainDB(member3)
+        self.member4 = BigchainDB(member4)
 
-        # Le configurazioni del database devono essere gestite a livello di container
-        # BigchainDB driver si connette solo tramite HTTP/HTTPS alle API
-        self.primary_node = BigchainDB(primary_node)
-        self.secondary_node = BigchainDB(secondary_node)
         self.keypair = generate_keypair()
 
-
+        # Usa l'hostname del container come definito nel docker-compose
+        self.mongo_uri = 'mongodb://localhost:27017/'
+        self.mongo_client = MongoClient(self.mongo_uri)
+        self.mongo_db = self.mongo_client.bigchain
 
     def _datetime_to_str(self, dt):
         return dt.strftime('%Y-%m-%dT%H:%M:%S')
@@ -28,7 +38,7 @@ class CertificateAdapter:
     def get_transaction(self, tx_id: str) -> Optional[Dict]:
         """Get a single transaction by ID"""
         try:
-            return self.primary_node.transactions.retrieve(tx_id)
+            return self.coordinator1.transactions.retrieve(tx_id)
         except Exception as e:
             print(f"Error getting transaction: {str(e)}")
             return None
@@ -36,7 +46,7 @@ class CertificateAdapter:
     def get_transaction_history(self, asset_id: str) -> List[Dict]:
         """Get all transactions for an asset"""
         try:
-            return self.primary_node.transactions.get(asset_id=asset_id)
+            return self.coordinator1.transactions.get(asset_id=asset_id)
         except Exception as e:
             print(f"Error getting transaction history: {str(e)}")
             return []
@@ -79,19 +89,19 @@ class CertificateAdapter:
 
     def create_certificate(self, prepared_data: Dict[str, Any]) -> Dict[str, Any]:
         """Create a new certificate"""
-        prepared_tx = self.primary_node.transactions.prepare(
+        prepared_tx = self.coordinator1.transactions.prepare(
             operation='CREATE',
             signers=self.keypair.public_key,
             asset=prepared_data['asset'],
             metadata=prepared_data['metadata']
         )
 
-        fulfilled_tx = self.primary_node.transactions.fulfill(
+        fulfilled_tx = self.coordinator1.transactions.fulfill(
             prepared_tx,
             private_keys=self.keypair.private_key
         )
 
-        return self.primary_node.transactions.send_commit(fulfilled_tx)
+        return self.coordinator1.transactions.send_commit(fulfilled_tx)
 
     def prepare_revocation(self, certificate_tx_id: str) -> Dict[str, Any]:
         """Prepare revocation data"""
@@ -142,7 +152,7 @@ class CertificateAdapter:
             }
 
             # Prepare and fulfill transfer transaction
-            prepared_transfer_tx = self.primary_node.transactions.prepare(
+            prepared_transfer_tx = self.coordinator1.transactions.prepare(
                 operation='TRANSFER',
                 asset=transfer_asset,
                 metadata=revocation_metadata,
@@ -150,13 +160,13 @@ class CertificateAdapter:
                 recipients=self.keypair.public_key,
             )
 
-            fulfilled_transfer_tx = self.primary_node.transactions.fulfill(
+            fulfilled_transfer_tx = self.coordinator1.transactions.fulfill(
                 prepared_transfer_tx,
                 private_keys=self.keypair.private_key
             )
 
             # Send transaction
-            return self.primary_node.transactions.send_commit(fulfilled_transfer_tx)
+            return self.coordinator1.transactions.send_commit(fulfilled_transfer_tx)
 
         except Exception as e:
             raise Exception(f"Failed to revoke certificate: {str(e)}")
@@ -180,7 +190,7 @@ class CertificateAdapter:
                           new_valid_months: int = 12) -> Dict[str, Any]:
         """Renew a certificate"""
         prepared_data = self.prepare_renewal(certificate_tx_id, new_valid_months)
-        latest_tx = self.primary_node.transactions.get(asset_id=certificate_tx_id)[-1]
+        latest_tx = self.coordinator1.transactions.get(asset_id=certificate_tx_id)[-1]
 
         output_index = 0
         output = latest_tx['outputs'][output_index]
@@ -193,7 +203,7 @@ class CertificateAdapter:
             'owners_before': output['public_keys']
         }
 
-        prepared_transfer_tx = self.primary_node.transactions.prepare(
+        prepared_transfer_tx = self.coordinator1.transactions.prepare(
             operation='TRANSFER',
             asset=prepared_data['asset'],
             metadata=prepared_data['metadata'],
@@ -201,12 +211,12 @@ class CertificateAdapter:
             recipients=self.keypair.public_key,
         )
 
-        fulfilled_transfer_tx = self.primary_node.transactions.fulfill(
+        fulfilled_transfer_tx = self.coordinator1.transactions.fulfill(
             prepared_transfer_tx,
             private_keys=self.keypair.private_key
         )
 
-        return self.primary_node.transactions.send_commit(fulfilled_transfer_tx)
+        return self.coordinator1.transactions.send_commit(fulfilled_transfer_tx)
 
     def verify_certificate(self, tx_id: str) -> Dict[str, Any]:
         """Verify a certificate"""
@@ -271,13 +281,13 @@ class CertificateAdapter:
         """Check connection to nodes"""
         try:
             # Check primary node
-            primary_info = self.primary_node.info()
+            primary_info = self.coordinator1.info()
             print("Primary node connected successfully")
             print(f"Primary node info: {primary_info}")
 
             # Check secondary node if exists
-            if self.secondary_node:
-                secondary_info = self.secondary_node.info()
+            if self.member2:
+                secondary_info = self.member2.info()
                 print("Secondary node connected successfully")
                 print(f"Secondary node info: {secondary_info}")
 
@@ -298,21 +308,21 @@ class CertificateAdapter:
             }
 
             # Prepare transaction
-            prepared_tx = self.primary_node.transactions.prepare(
+            prepared_tx = self.coordinator1.transactions.prepare(
                 operation='CREATE',
                 signers=self.keypair.public_key,
                 asset=test_asset
             )
 
             # Fulfill transaction
-            fulfilled_tx = self.primary_node.transactions.fulfill(
+            fulfilled_tx = self.coordinator1.transactions.fulfill(
                 prepared_tx,
                 private_keys=self.keypair.private_key
             )
 
             print('primo nodo creata ')
             # Send transaction
-            return self.primary_node.transactions.send_commit(fulfilled_tx)
+            return self.coordinator1.transactions.send_commit(fulfilled_tx)
 
         except Exception as e:
             print(f"Error creating test transaction: {e}")
@@ -325,7 +335,7 @@ class CertificateAdapter:
         for attempt in range(max_retries):
             try:
                 # Try to get transaction from secondary node
-                verification = self.secondary_node.transactions.retrieve(tx_id)
+                verification = self.member2.transactions.retrieve(tx_id)
                 if verification:
                     print(f"Attempt {attempt + 1}: Transaction found on secondary node")
                     return verification
@@ -382,3 +392,62 @@ class CertificateAdapter:
                 'primary_node_status': 'Unknown',
                 'secondary_node_status': 'Unknown'
             }
+
+    def get_container_ip(container_name):
+        cmd = f"docker inspect -f '{{{{range.NetworkSettings.Networks}}}}{{{{.IPAddress}}}}{{{{end}}}}' {container_name}"
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+        return result.stdout.strip()
+
+    def print_ledger(self) -> List[Dict]:
+        """
+        Retrieves and prints all certificates by using BigchainDB API and MongoDB
+        """
+        try:
+            print("\n=== FULL CERTIFICATE LEDGER ===")
+            certificates = []
+
+            # Connect to MongoDB using docker network alias
+            client = MongoClient('mongodb://bigchaindb1:27017/',
+                                 serverSelectionTimeoutMS=5000,
+                                 connectTimeoutMS=5000)
+
+            db = client.bigchain
+
+            # Get all transactions that are certificate creations
+            cursor = db.transactions.find(
+                {"$and": [
+                    {"operation": "CREATE"},
+                    {"asset.data.type": "micro_certificate"}
+                ]}
+            )
+
+            for tx in cursor:
+                try:
+                    # Get certificate details
+                    certificate_details = self.verify_certificate(tx['id'])
+                    if certificate_details:
+                        print(f"\nCertificate ID: {tx['id']}")
+                        print(f"Holder: {tx['asset']['data']['holder']}")
+                        print(f"Competence: {tx['asset']['data']['competence']}")
+                        print(f"Status: {certificate_details['valid']}")
+                        print("=====================")
+
+                        certificates.append({
+                            'id': tx['id'],
+                            'details': certificate_details,
+                            'asset': tx['asset'],
+                            'metadata': tx['metadata']
+                        })
+
+                except Exception as e:
+                    print(f"Error processing certificate {tx['id']}: {str(e)}")
+                    continue
+
+            return certificates
+
+        except Exception as e:
+            print(f"Error in print_ledger: {str(e)}")
+            return []
+        finally:
+            if 'client' in locals():
+                client.close()

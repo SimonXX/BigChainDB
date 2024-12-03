@@ -1,6 +1,5 @@
 from typing import Optional, Dict
 from venv import logger
-
 from fastapi import FastAPI, HTTPException
 from src.adapters.certificate import CertificateAdapter
 from pydantic import BaseModel, constr
@@ -184,4 +183,24 @@ async def verify_nodes_communication() -> Dict:
                 "message": "Unexpected error during node communication verification",
                 "error": str(e)
             }
+        )
+
+
+@app.get("/certificates/")
+async def list_certificates():
+    """
+    List all certificates
+    """
+    try:
+        certificates = certificate_adapter.print_ledger()
+
+        return {
+            "total_certificates": len(certificates),
+            "certificates": certificates
+        }
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error retrieving certificates: {str(e)}"
         )
